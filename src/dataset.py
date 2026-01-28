@@ -113,9 +113,9 @@ class ESC50Dataset(Dataset):
     def __getitem__(self, idx):
         row = self.meta.iloc[idx]
 
-        # 오디오 로드
+        # 오디오 로드 (soundfile 백엔드 사용)
         audio_path = os.path.join(self.data_dir, "audio", row['filename'])
-        waveform, sr = torchaudio.load(audio_path)
+        waveform, sr = torchaudio.load(audio_path, backend="soundfile")
 
         # 리샘플링
         if sr != self.sample_rate:

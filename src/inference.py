@@ -75,7 +75,7 @@ class FallDetector:
 
     def predict_file(self, audio_path: str) -> dict:
         """파일에서 낙상 감지"""
-        waveform, sr = torchaudio.load(audio_path)
+        waveform, sr = torchaudio.load(audio_path, backend="soundfile")
         return self.predict(waveform, sr)
 
     def predict(self, waveform: torch.Tensor, sr: int) -> dict:

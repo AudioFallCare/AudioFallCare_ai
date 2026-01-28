@@ -20,7 +20,7 @@ def load_audio(file_path: str, target_sr: int = 16000):
         waveform: 오디오 웨이브폼 (torch.Tensor)
         sample_rate: 샘플레이트
     """
-    waveform, sr = torchaudio.load(file_path)
+    waveform, sr = torchaudio.load(file_path, backend="soundfile")
 
     # 리샘플링
     if sr != target_sr:
