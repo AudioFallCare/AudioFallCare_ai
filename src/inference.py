@@ -5,7 +5,10 @@ import torch
 import librosa
 import numpy as np
 
-from model import FallDetectionCNN
+try:
+    from model import FallDetectionCNN
+except ImportError:
+    from src.model import FallDetectionCNN
 
 
 class FallDetector:

@@ -9,8 +9,12 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
-from dataset import SAFEDataset
-from model import FallDetectionCNN, FallDetectionResNet
+try:
+    from dataset import SAFEDataset
+    from model import FallDetectionCNN, FallDetectionResNet
+except ImportError:
+    from src.dataset import SAFEDataset
+    from src.model import FallDetectionCNN, FallDetectionResNet
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
