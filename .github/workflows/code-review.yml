@@ -1,0 +1,109 @@
+name: Code Review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Get PR info
+        id: pr-info
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: files } = await github.rest.pulls.listFiles({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number
+            });
+
+            const changedFiles = files.map(f => f.filename);
+            const additions = context.payload.pull_request.additions;
+            const deletions = context.payload.pull_request.deletions;
+            const changedFilesCount = changedFiles.length;
+
+            let review = [];
+            review.push('## 📋 PR 자동 리뷰\n');
+
+            // Summary
+            review.push('### 📊 변경 사항 요약');
+            review.push(`- 📁 변경된 파일: **${changedFilesCount}개**`);
+            review.push(`- ➕ 추가된 줄: **${additions}줄**`);
+            review.push(`- ➖ 삭제된 줄: **${deletions}줄**`);
+            review.push('');
+
+            // File categorization for AI project
+            const fileTypes = {
+              models: [],
+              data: [],
+              training: [],
+              inference: [],
+              tests: [],
+              notebooks: [],
+              configs: [],
+              others: []
+            };
+
+            for (const file of changedFiles) {
+              if (!file) continue;
+              if (file.includes('model')) fileTypes.models.push(file);
+              else if (file.includes('data') || file.includes('preprocess')) fileTypes.data.push(file);
+              else if (file.includes('train')) fileTypes.training.push(file);
+              else if (file.includes('inference') || file.includes('predict')) fileTypes.inference.push(file);
+              else if (file.includes('test')) fileTypes.tests.push(file);
+              else if (file.endsWith('.ipynb')) fileTypes.notebooks.push(file);
+              else if (file.endsWith('.yml') || file.endsWith('.yaml') || file.endsWith('.json')) fileTypes.configs.push(file);
+              else fileTypes.others.push(file);
+            }
+
+            review.push('### 📂 변경된 파일 분류');
+            if (fileTypes.models.length) review.push(`- 🧠 모델: ${fileTypes.models.length}개`);
+            if (fileTypes.data.length) review.push(`- 📊 데이터/전처리: ${fileTypes.data.length}개`);
+            if (fileTypes.training.length) review.push(`- 🏋️ 학습: ${fileTypes.training.length}개`);
+            if (fileTypes.inference.length) review.push(`- 🔮 추론: ${fileTypes.inference.length}개`);
+            if (fileTypes.tests.length) review.push(`- 🧪 테스트: ${fileTypes.tests.length}개`);
+            if (fileTypes.notebooks.length) review.push(`- 📓 노트북: ${fileTypes.notebooks.length}개`);
+            if (fileTypes.configs.length) review.push(`- ⚙️ 설정: ${fileTypes.configs.length}개`);
+            if (fileTypes.others.length) review.push(`- 📦 기타: ${fileTypes.others.length}개`);
+            review.push('');
+
+            // Warnings
+            let warnings = [];
+            if (additions > 500) warnings.push('⚠️ 변경량이 500줄을 초과합니다. PR을 더 작게 나누는 것을 고려해주세요.');
+            if (changedFilesCount > 20) warnings.push('⚠️ 20개 이상의 파일이 변경되었습니다.');
+
+            if (warnings.length > 0) {
+              review.push('### ⚠️ 주의사항');
+              warnings.forEach(w => review.push(w));
+            }
+
+            // Post comment
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number
+            });
+
+            const botComment = comments.find(c => c.user.login === 'github-actions[bot]' && c.body.includes('PR 자동 리뷰'));
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: review.join('\n')
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: review.join('\n')
+              });
+            }
