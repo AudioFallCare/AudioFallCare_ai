@@ -2,8 +2,7 @@
 데이터 전처리 스크립트
 """
 import torch
-import torchaudio
-import torchaudio.transforms as T
+import librosa
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -20,17 +19,11 @@ def load_audio(file_path: str, target_sr: int = 16000):
         waveform: 오디오 웨이브폼 (torch.Tensor)
         sample_rate: 샘플레이트
     """
-    waveform, sr = torchaudio.load(file_path, backend="soundfile")
+    # librosa로 로드 (자동으로 리샘플링 및 모노 변환)
+    waveform, sr = librosa.load(file_path, sr=target_sr, mono=True)
 
-    # 리샘플링
-    if sr != target_sr:
-        resampler = T.Resample(sr, target_sr)
-        waveform = resampler(waveform)
-        sr = target_sr
-
-    # 모노로 변환
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+    # numpy to tensor, 채널 차원 추가
+    waveform = torch.from_numpy(waveform).float().unsqueeze(0)
 
     return waveform, sr
 
@@ -55,16 +48,26 @@ def extract_mel_spectrogram(
     Returns:
         mel_spec_db: Mel Spectrogram (dB)
     """
-    mel_transform = T.MelSpectrogram(
-        sample_rate=sample_rate,
+    # tensor to numpy
+    if isinstance(waveform, torch.Tensor):
+        waveform_np = waveform.squeeze().numpy()
+    else:
+        waveform_np = waveform
+
+    # Mel Spectrogram 추출
+    mel_spec = librosa.feature.melspectrogram(
+        y=waveform_np,
+        sr=sample_rate,
         n_mels=n_mels,
         n_fft=n_fft,
         hop_length=hop_length
     )
-    amplitude_to_db = T.AmplitudeToDB()
 
-    mel_spec = mel_transform(waveform)
-    mel_spec_db = amplitude_to_db(mel_spec)
+    # dB 변환
+    mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+
+    # numpy to tensor, 채널 차원 추가
+    mel_spec_db = torch.from_numpy(mel_spec_db).float().unsqueeze(0)
 
     return mel_spec_db
 
@@ -85,12 +88,22 @@ def extract_mfcc(
     Returns:
         mfcc: MFCC 특징
     """
-    mfcc_transform = T.MFCC(
-        sample_rate=sample_rate,
+    # tensor to numpy
+    if isinstance(waveform, torch.Tensor):
+        waveform_np = waveform.squeeze().numpy()
+    else:
+        waveform_np = waveform
+
+    # MFCC 추출
+    mfcc = librosa.feature.mfcc(
+        y=waveform_np,
+        sr=sample_rate,
         n_mfcc=n_mfcc
     )
 
-    mfcc = mfcc_transform(waveform)
+    # numpy to tensor, 채널 차원 추가
+    mfcc = torch.from_numpy(mfcc).float().unsqueeze(0)
+
     return mfcc
 
 

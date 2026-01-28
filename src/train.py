@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 
-from dataset import download_esc50, ESC50Dataset
+from dataset import SAFEDataset
 from model import FallDetectionCNN, FallDetectionResNet
 
 
@@ -77,12 +77,9 @@ def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # 데이터셋 다운로드
-    data_path = download_esc50(args.data_dir)
-
     # 데이터셋 로드
-    train_dataset = ESC50Dataset(data_path, train=True, fold=args.fold)
-    test_dataset = ESC50Dataset(data_path, train=False, fold=args.fold)
+    train_dataset = SAFEDataset(args.data_dir, train=True, test_fold=args.fold)
+    test_dataset = SAFEDataset(args.data_dir, train=False, test_fold=args.fold)
 
     train_loader = DataLoader(
         train_dataset,
@@ -159,7 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--fold", type=int, default=5, help="테스트용 fold (1-5)")
+    parser.add_argument("--fold", type=int, default=10, help="테스트용 fold (1-10)")
 
     args = parser.parse_args()
     train(args)

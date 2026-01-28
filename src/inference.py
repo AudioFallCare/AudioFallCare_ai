@@ -2,8 +2,7 @@
 모델 추론 스크립트
 """
 import torch
-import torchaudio
-import torchaudio.transforms as T
+import librosa
 import numpy as np
 
 from model import FallDetectionCNN
@@ -22,6 +21,9 @@ class FallDetector:
         threshold: float = 0.5
     ):
         self.sample_rate = sample_rate
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.hop_length = hop_length
         self.threshold = threshold
 
         # 디바이스 설정
@@ -34,36 +36,34 @@ class FallDetector:
         self.model = self.model.to(self.device)
         self.model.eval()
 
-        # 오디오 변환
-        self.mel_transform = T.MelSpectrogram(
-            sample_rate=sample_rate,
-            n_mels=n_mels,
-            n_fft=n_fft,
-            hop_length=hop_length
-        )
-        self.amplitude_to_db = T.AmplitudeToDB()
-
         print(f"Model loaded from {model_path}")
         print(f"Model accuracy: {checkpoint.get('accuracy', 'N/A')}")
         print(f"Model F1: {checkpoint.get('f1', 'N/A')}")
 
-    def preprocess(self, waveform: torch.Tensor, sr: int) -> torch.Tensor:
+    def preprocess(self, waveform: np.ndarray, sr: int) -> torch.Tensor:
         """오디오 전처리"""
         # 리샘플링
         if sr != self.sample_rate:
-            resampler = T.Resample(sr, self.sample_rate)
-            waveform = resampler(waveform)
-
-        # 모노로 변환
-        if waveform.dim() > 1 and waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-
-        if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)
+            waveform = librosa.resample(waveform, orig_sr=sr, target_sr=self.sample_rate)
+            sr = self.sample_rate
 
         # Mel Spectrogram 변환
-        mel_spec = self.mel_transform(waveform)
-        mel_spec_db = self.amplitude_to_db(mel_spec)
+        mel_spec = librosa.feature.melspectrogram(
+            y=waveform,
+            sr=sr,
+            n_mels=self.n_mels,
+            n_fft=self.n_fft,
+            hop_length=self.hop_length
+        )
+
+        # dB 변환
+        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+
+        # numpy to tensor
+        mel_spec_db = torch.from_numpy(mel_spec_db).float()
+
+        # 채널 차원 추가 (1, n_mels, time)
+        mel_spec_db = mel_spec_db.unsqueeze(0)
 
         # 정규화
         mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
@@ -75,15 +75,15 @@ class FallDetector:
 
     def predict_file(self, audio_path: str) -> dict:
         """파일에서 낙상 감지"""
-        waveform, sr = torchaudio.load(audio_path, backend="soundfile")
+        waveform, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True)
         return self.predict(waveform, sr)
 
-    def predict(self, waveform: torch.Tensor, sr: int) -> dict:
+    def predict(self, waveform: np.ndarray, sr: int) -> dict:
         """
         오디오 데이터로 낙상 여부 판별
 
         Args:
-            waveform: 오디오 웨이브폼 텐서
+            waveform: 오디오 웨이브폼 (numpy array)
             sr: 샘플레이트
 
         Returns:
@@ -127,11 +127,7 @@ class FallDetector:
         Returns:
             dict: {fall: bool, confidence: float, soundType: str}
         """
-        waveform = torch.from_numpy(audio_chunk).float()
-        if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)
-
-        return self.predict(waveform, sr)
+        return self.predict(audio_chunk, sr)
 
 
 def predict(audio_data) -> dict:
