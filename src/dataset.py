@@ -1,16 +1,19 @@
 """
 SAFE 데이터셋 로드
 Sound Analysis for Fall Event Detection
+
+librosa: 오디오 로드 (호환성)
+torchaudio: Mel Spectrogram 변환 (GPU 가속)
 """
 import os
 import glob
 import numpy as np
 import torch
-from torch.utils.data import Dataset
+import torchaudio.transforms as T
 import librosa
 
 
-class SAFEDataset(Dataset):
+class SAFEDataset(torch.utils.data.Dataset):
     """SAFE 데이터셋 (낙상/비낙상 이진 분류용)
 
     파일명 형식: AA-BBB-CC-DDD-FF.wav
@@ -28,9 +31,10 @@ class SAFEDataset(Dataset):
         n_mels: int = 64,
         n_fft: int = 1024,
         hop_length: int = 512,
-        max_length: int = 3,  # 최대 오디오 길이 (초)
+        max_length: int = 3,
         train: bool = True,
-        test_fold: int = 10
+        test_fold: int = 10,
+        device: str = None
     ):
         self.data_dir = data_dir
         self.sample_rate = sample_rate
@@ -38,8 +42,23 @@ class SAFEDataset(Dataset):
         self.n_fft = n_fft
         self.hop_length = hop_length
         self.max_length = max_length
-        self.max_samples = sample_rate * max_length  # 3초 = 48000 샘플
+        self.max_samples = sample_rate * max_length
         self.train = train
+
+        # 디바이스 설정
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
+
+        # torchaudio 변환기 (GPU 가속 가능)
+        self.mel_transform = T.MelSpectrogram(
+            sample_rate=sample_rate,
+            n_mels=n_mels,
+            n_fft=n_fft,
+            hop_length=hop_length
+        )
+        self.amplitude_to_db = T.AmplitudeToDB()
 
         # WAV 파일 목록 로드
         all_files = glob.glob(os.path.join(data_dir, "*.wav"))
@@ -57,9 +76,8 @@ class SAFEDataset(Dataset):
 
             if len(parts) >= 5:
                 fold = int(parts[0])
-                label = 1 if parts[4] == '01' else 0  # 01=낙상, 02=비낙상
+                label = 1 if parts[4] == '01' else 0
 
-                # Train/Test 분리 (fold 기반)
                 if train and fold != test_fold:
                     self.files.append(filepath)
                     self.labels.append(label)
@@ -81,7 +99,7 @@ class SAFEDataset(Dataset):
         filepath = self.files[idx]
         label = self.labels[idx]
 
-        # 오디오 로드 (librosa 사용)
+        # librosa로 오디오 로드 (호환성 좋음)
         waveform, sr = librosa.load(filepath, sr=self.sample_rate, mono=True)
 
         # 고정 길이로 패딩/자르기
@@ -91,23 +109,15 @@ class SAFEDataset(Dataset):
             padding = self.max_samples - len(waveform)
             waveform = np.pad(waveform, (0, padding), mode='constant')
 
-        # Mel Spectrogram 변환
-        mel_spec = librosa.feature.melspectrogram(
-            y=waveform,
-            sr=sr,
-            n_mels=self.n_mels,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length
-        )
-
-        # dB 변환
-        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
-
         # numpy to tensor
-        mel_spec_db = torch.from_numpy(mel_spec_db).float()
+        waveform = torch.from_numpy(waveform).float()
 
-        # 채널 차원 추가 (1, n_mels, time)
-        mel_spec_db = mel_spec_db.unsqueeze(0)
+        # 채널 차원 추가 (1, samples)
+        waveform = waveform.unsqueeze(0)
+
+        # torchaudio로 Mel Spectrogram 변환 (GPU 가속 가능)
+        mel_spec = self.mel_transform(waveform)
+        mel_spec_db = self.amplitude_to_db(mel_spec)
 
         # 정규화
         mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
