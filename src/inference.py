@@ -161,6 +161,7 @@ def predict(audio_data) -> dict:
     Returns:
         dict: {fall: bool, confidence: float, soundType: str}
     """
+    # 모델이 없으면 기본값 반환
     return {
         "fall": False,
         "confidence": 0.0,
