@@ -2,7 +2,7 @@
 Spring 백엔드로 낙상 알림 전송
 """
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 import httpx
 
@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 async def notify_fall(
-    guardian_id: str,
-    recorder_id: str,
+    guardian_id: int,
+    recorder_id: int,
     confidence: float,
     sound_type: str,
 ) -> bool:
@@ -28,7 +28,7 @@ async def notify_fall(
         "recorderId": recorder_id,
         "confidence": confidence,
         "soundType": sound_type,
-        "detectedAt": datetime.now(timezone.utc).isoformat(),
+        "detectedAt": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
     }
 
     url = f"{settings.SPRING_SERVER_URL}/api/internal/fall"
