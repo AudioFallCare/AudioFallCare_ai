@@ -1,82 +1,57 @@
 """
-데이터셋 다운로드 및 로드
-ESC-50 데이터셋 사용
+SAFE 데이터셋 로드
+Sound Analysis for Fall Event Detection
+
+librosa: 오디오 로드 (호환성)
+torchaudio: Mel Spectrogram 변환 (GPU 가속)
 """
 import os
-import urllib.request
-import zipfile
-import pandas as pd
+import glob
+import numpy as np
 import torch
-from torch.utils.data import Dataset
-import torchaudio
 import torchaudio.transforms as T
+import librosa
 
 
-ESC50_URL = "https://github.com/karoldvl/ESC-50/archive/master.zip"
+class SAFEDataset(torch.utils.data.Dataset):
+    """SAFE 데이터셋 (낙상/비낙상 이진 분류용)
 
-# 낙상 관련 클래스 (ESC-50에서 충격음, 유리 깨지는 소리 등)
-FALL_RELATED_CLASSES = [
-    "glass_breaking",      # 유리 깨지는 소리
-    "door_wood_knock",     # 문 두드리는 소리 (충격음)
-    "footsteps",           # 발걸음
-    "door_wood_creaks",    # 문 삐걱거리는 소리
-]
-
-# 비낙상 클래스 (일상 소리)
-NON_FALL_CLASSES = [
-    "clock_tick",
-    "snoring",
-    "breathing",
-    "coughing",
-    "sneezing",
-    "crying_baby",
-    "laughing",
-    "keyboard_typing",
-    "mouse_click",
-]
-
-
-def download_esc50(data_dir: str = "data"):
-    """ESC-50 데이터셋 다운로드"""
-    os.makedirs(data_dir, exist_ok=True)
-    zip_path = os.path.join(data_dir, "ESC-50-master.zip")
-    extract_path = os.path.join(data_dir, "ESC-50-master")
-
-    if os.path.exists(extract_path):
-        print("ESC-50 데이터셋이 이미 존재합니다.")
-        return extract_path
-
-    print("ESC-50 데이터셋 다운로드 중...")
-    urllib.request.urlretrieve(ESC50_URL, zip_path)
-
-    print("압축 해제 중...")
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(data_dir)
-
-    os.remove(zip_path)
-    print("다운로드 완료!")
-
-    return extract_path
-
-
-class ESC50Dataset(Dataset):
-    """ESC-50 데이터셋 (낙상/비낙상 이진 분류용)"""
+    파일명 형식: AA-BBB-CC-DDD-FF.wav
+    - AA: Fold 번호 (01-10)
+    - BBB: 랜덤 코드
+    - CC: 환경 ID
+    - DDD: 시퀀스 번호
+    - FF: 클래스 (01=낙상, 02=비낙상)
+    """
 
     def __init__(
         self,
-        data_dir: str = "data/ESC-50-master",
+        data_dir: str = "data",
         sample_rate: int = 16000,
         n_mels: int = 64,
         n_fft: int = 1024,
         hop_length: int = 512,
+        max_length: int = 3,
         train: bool = True,
-        fold: int = 5
+        test_fold: int = 10,
+        device: str = None
     ):
         self.data_dir = data_dir
         self.sample_rate = sample_rate
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.max_length = max_length
+        self.max_samples = sample_rate * max_length
         self.train = train
 
-        # Mel Spectrogram 변환
+        # 디바이스 설정
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
+
+        # torchaudio 변환기 (GPU 가속 가능)
         self.mel_transform = T.MelSpectrogram(
             sample_rate=sample_rate,
             n_mels=n_mels,
@@ -85,66 +60,77 @@ class ESC50Dataset(Dataset):
         )
         self.amplitude_to_db = T.AmplitudeToDB()
 
-        # 메타데이터 로드
-        meta_path = os.path.join(data_dir, "meta", "esc50.csv")
-        self.meta = pd.read_csv(meta_path)
+        # WAV 파일 목록 로드
+        all_files = glob.glob(os.path.join(data_dir, "*.wav"))
 
-        # 낙상/비낙상 필터링
-        fall_mask = self.meta['category'].isin(FALL_RELATED_CLASSES)
-        non_fall_mask = self.meta['category'].isin(NON_FALL_CLASSES)
-        self.meta = self.meta[fall_mask | non_fall_mask].reset_index(drop=True)
+        if len(all_files) == 0:
+            raise ValueError(f"No WAV files found in {data_dir}")
 
-        # 라벨 생성 (1: 낙상 관련, 0: 비낙상)
-        self.meta['label'] = self.meta['category'].isin(FALL_RELATED_CLASSES).astype(int)
+        # 파일 정보 파싱
+        self.files = []
+        self.labels = []
 
-        # Train/Test 분리 (fold 기반)
-        if train:
-            self.meta = self.meta[self.meta['fold'] != fold].reset_index(drop=True)
-        else:
-            self.meta = self.meta[self.meta['fold'] == fold].reset_index(drop=True)
+        for filepath in all_files:
+            filename = os.path.basename(filepath)
+            parts = filename.replace('.wav', '').split('-')
 
-        print(f"{'Train' if train else 'Test'} 데이터: {len(self.meta)}개")
-        print(f"  - 낙상 관련: {self.meta['label'].sum()}개")
-        print(f"  - 비낙상: {(1 - self.meta['label']).sum()}개")
+            if len(parts) >= 5:
+                fold = int(parts[0])
+                label = 1 if parts[4] == '01' else 0
+
+                if train and fold != test_fold:
+                    self.files.append(filepath)
+                    self.labels.append(label)
+                elif not train and fold == test_fold:
+                    self.files.append(filepath)
+                    self.labels.append(label)
+
+        fall_count = sum(self.labels)
+        non_fall_count = len(self.labels) - fall_count
+
+        print(f"{'Train' if train else 'Test'} 데이터: {len(self.files)}개")
+        print(f"  - 낙상: {fall_count}개")
+        print(f"  - 비낙상: {non_fall_count}개")
 
     def __len__(self):
-        return len(self.meta)
+        return len(self.files)
 
     def __getitem__(self, idx):
-        row = self.meta.iloc[idx]
+        filepath = self.files[idx]
+        label = self.labels[idx]
 
-        # 오디오 로드
-        audio_path = os.path.join(self.data_dir, "audio", row['filename'])
-        waveform, sr = torchaudio.load(audio_path)
+        # librosa로 오디오 로드 (호환성 좋음)
+        waveform, sr = librosa.load(filepath, sr=self.sample_rate, mono=True)
 
-        # 리샘플링
-        if sr != self.sample_rate:
-            resampler = T.Resample(sr, self.sample_rate)
-            waveform = resampler(waveform)
+        # 고정 길이로 패딩/자르기
+        if len(waveform) > self.max_samples:
+            waveform = waveform[:self.max_samples]
+        elif len(waveform) < self.max_samples:
+            padding = self.max_samples - len(waveform)
+            waveform = np.pad(waveform, (0, padding), mode='constant')
 
-        # 모노로 변환
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
+        # numpy to tensor
+        waveform = torch.from_numpy(waveform).float()
 
-        # Mel Spectrogram 변환
+        # 채널 차원 추가 (1, samples)
+        waveform = waveform.unsqueeze(0)
+
+        # torchaudio로 Mel Spectrogram 변환 (GPU 가속 가능)
         mel_spec = self.mel_transform(waveform)
         mel_spec_db = self.amplitude_to_db(mel_spec)
 
         # 정규화
         mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
 
-        label = torch.tensor(row['label'], dtype=torch.float32)
+        label = torch.tensor(label, dtype=torch.float32)
 
         return mel_spec_db, label
 
 
 if __name__ == "__main__":
-    # 데이터셋 다운로드 테스트
-    data_path = download_esc50("data")
-
     # 데이터셋 로드 테스트
-    train_dataset = ESC50Dataset(data_path, train=True)
-    test_dataset = ESC50Dataset(data_path, train=False)
+    train_dataset = SAFEDataset("data", train=True)
+    test_dataset = SAFEDataset("data", train=False)
 
     # 샘플 확인
     mel_spec, label = train_dataset[0]

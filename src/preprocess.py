@@ -1,16 +1,19 @@
 """
 데이터 전처리 스크립트
+
+librosa: 오디오 로드 (호환성)
+torchaudio: Mel Spectrogram 변환 (GPU 가속)
 """
 import torch
-import torchaudio
 import torchaudio.transforms as T
+import librosa
 import numpy as np
 import matplotlib.pyplot as plt
 
 
 def load_audio(file_path: str, target_sr: int = 16000):
     """
-    오디오 파일 로드
+    오디오 파일 로드 (librosa 사용 - 호환성 좋음)
 
     Args:
         file_path: 오디오 파일 경로
@@ -20,17 +23,11 @@ def load_audio(file_path: str, target_sr: int = 16000):
         waveform: 오디오 웨이브폼 (torch.Tensor)
         sample_rate: 샘플레이트
     """
-    waveform, sr = torchaudio.load(file_path)
+    # librosa로 로드 (자동으로 리샘플링 및 모노 변환)
+    waveform, sr = librosa.load(file_path, sr=target_sr, mono=True)
 
-    # 리샘플링
-    if sr != target_sr:
-        resampler = T.Resample(sr, target_sr)
-        waveform = resampler(waveform)
-        sr = target_sr
-
-    # 모노로 변환
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+    # numpy to tensor, 채널 차원 추가
+    waveform = torch.from_numpy(waveform).float().unsqueeze(0)
 
     return waveform, sr
 
@@ -40,29 +37,41 @@ def extract_mel_spectrogram(
     sample_rate: int = 16000,
     n_mels: int = 64,
     n_fft: int = 1024,
-    hop_length: int = 512
+    hop_length: int = 512,
+    device: str = None
 ) -> torch.Tensor:
     """
-    Mel Spectrogram 추출
+    Mel Spectrogram 추출 (torchaudio 사용 - GPU 가속)
 
     Args:
-        waveform: 오디오 웨이브폼
+        waveform: 오디오 웨이브폼 (torch.Tensor)
         sample_rate: 샘플레이트
         n_mels: Mel 필터 수
         n_fft: FFT 윈도우 크기
         hop_length: 홉 길이
+        device: 디바이스 (cuda/cpu)
 
     Returns:
         mel_spec_db: Mel Spectrogram (dB)
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    # torchaudio 변환기 생성
     mel_transform = T.MelSpectrogram(
         sample_rate=sample_rate,
         n_mels=n_mels,
         n_fft=n_fft,
         hop_length=hop_length
-    )
-    amplitude_to_db = T.AmplitudeToDB()
+    ).to(device)
+    amplitude_to_db = T.AmplitudeToDB().to(device)
 
+    # 디바이스로 이동
+    waveform = waveform.to(device)
+
+    # Mel Spectrogram 변환
     mel_spec = mel_transform(waveform)
     mel_spec_db = amplitude_to_db(mel_spec)
 
@@ -72,25 +81,38 @@ def extract_mel_spectrogram(
 def extract_mfcc(
     waveform: torch.Tensor,
     sample_rate: int = 16000,
-    n_mfcc: int = 40
+    n_mfcc: int = 40,
+    device: str = None
 ) -> torch.Tensor:
     """
-    MFCC 추출
+    MFCC 추출 (torchaudio 사용 - GPU 가속)
 
     Args:
-        waveform: 오디오 웨이브폼
+        waveform: 오디오 웨이브폼 (torch.Tensor)
         sample_rate: 샘플레이트
         n_mfcc: MFCC 계수 수
+        device: 디바이스 (cuda/cpu)
 
     Returns:
         mfcc: MFCC 특징
     """
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(device)
+
+    # torchaudio 변환기 생성
     mfcc_transform = T.MFCC(
         sample_rate=sample_rate,
         n_mfcc=n_mfcc
-    )
+    ).to(device)
 
+    # 디바이스로 이동
+    waveform = waveform.to(device)
+
+    # MFCC 변환
     mfcc = mfcc_transform(waveform)
+
     return mfcc
 
 
@@ -99,13 +121,14 @@ def normalize(tensor: torch.Tensor) -> torch.Tensor:
     return (tensor - tensor.mean()) / (tensor.std() + 1e-8)
 
 
-def extract_features(audio_data, feature_type: str = "mel"):
+def extract_features(audio_data, feature_type: str = "mel", device: str = None):
     """
     오디오에서 특징 추출
 
     Args:
         audio_data: 오디오 데이터 (파일 경로 또는 텐서)
         feature_type: 특징 유형 ("mel" 또는 "mfcc")
+        device: 디바이스 (cuda/cpu)
 
     Returns:
         features: 추출된 특징
@@ -118,9 +141,9 @@ def extract_features(audio_data, feature_type: str = "mel"):
         sr = 16000
 
     if feature_type == "mel":
-        features = extract_mel_spectrogram(waveform, sr)
+        features = extract_mel_spectrogram(waveform, sr, device=device)
     elif feature_type == "mfcc":
-        features = extract_mfcc(waveform, sr)
+        features = extract_mfcc(waveform, sr, device=device)
     else:
         raise ValueError(f"Unknown feature type: {feature_type}")
 
@@ -136,7 +159,7 @@ def visualize_audio(file_path: str, save_path: str = None):
         save_path: 저장 경로 (None이면 화면에 표시)
     """
     waveform, sr = load_audio(file_path)
-    mel_spec = extract_mel_spectrogram(waveform, sr)
+    mel_spec = extract_mel_spectrogram(waveform, sr, device="cpu")
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 8))
 
@@ -148,7 +171,7 @@ def visualize_audio(file_path: str, save_path: str = None):
 
     # Mel Spectrogram
     img = axes[1].imshow(
-        mel_spec.squeeze().numpy(),
+        mel_spec.squeeze().cpu().numpy(),
         aspect='auto',
         origin='lower',
         cmap='viridis'
@@ -180,6 +203,7 @@ if __name__ == "__main__":
     # 특징 추출 테스트
     features = extract_features(args.input)
     print(f"Features shape: {features.shape}")
+    print(f"Device: {features.device}")
 
     # 시각화
     if args.visualize:

@@ -1,12 +1,18 @@
 """
 모델 추론 스크립트
+
+librosa: 오디오 로드 (호환성)
+torchaudio: Mel Spectrogram 변환 (GPU 가속)
 """
 import torch
-import torchaudio
 import torchaudio.transforms as T
+import librosa
 import numpy as np
 
-from model import FallDetectionCNN
+try:
+    from model import FallDetectionCNN
+except ImportError:
+    from src.model import FallDetectionCNN
 
 
 class FallDetector:
@@ -19,9 +25,15 @@ class FallDetector:
         n_mels: int = 64,
         n_fft: int = 1024,
         hop_length: int = 512,
+        max_length: int = 3,
         threshold: float = 0.5
     ):
         self.sample_rate = sample_rate
+        self.n_mels = n_mels
+        self.n_fft = n_fft
+        self.hop_length = hop_length
+        self.max_length = max_length
+        self.max_samples = sample_rate * max_length
         self.threshold = threshold
 
         # 디바이스 설정
@@ -34,34 +46,43 @@ class FallDetector:
         self.model = self.model.to(self.device)
         self.model.eval()
 
-        # 오디오 변환
+        # torchaudio 변환기 (GPU 가속)
         self.mel_transform = T.MelSpectrogram(
             sample_rate=sample_rate,
             n_mels=n_mels,
             n_fft=n_fft,
             hop_length=hop_length
-        )
-        self.amplitude_to_db = T.AmplitudeToDB()
+        ).to(self.device)
+        self.amplitude_to_db = T.AmplitudeToDB().to(self.device)
 
         print(f"Model loaded from {model_path}")
+        print(f"Device: {self.device}")
         print(f"Model accuracy: {checkpoint.get('accuracy', 'N/A')}")
         print(f"Model F1: {checkpoint.get('f1', 'N/A')}")
 
-    def preprocess(self, waveform: torch.Tensor, sr: int) -> torch.Tensor:
+    def preprocess(self, waveform: np.ndarray, sr: int) -> torch.Tensor:
         """오디오 전처리"""
-        # 리샘플링
+        # 리샘플링 (librosa)
         if sr != self.sample_rate:
-            resampler = T.Resample(sr, self.sample_rate)
-            waveform = resampler(waveform)
+            waveform = librosa.resample(waveform, orig_sr=sr, target_sr=self.sample_rate)
 
-        # 모노로 변환
-        if waveform.dim() > 1 and waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
+        # 고정 길이로 패딩/자르기
+        if len(waveform) > self.max_samples:
+            waveform = waveform[:self.max_samples]
+        elif len(waveform) < self.max_samples:
+            padding = self.max_samples - len(waveform)
+            waveform = np.pad(waveform, (0, padding), mode='constant')
 
-        if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)
+        # numpy to tensor
+        waveform = torch.from_numpy(waveform).float()
 
-        # Mel Spectrogram 변환
+        # 채널 차원 추가 (1, samples)
+        waveform = waveform.unsqueeze(0)
+
+        # GPU로 이동
+        waveform = waveform.to(self.device)
+
+        # torchaudio로 Mel Spectrogram 변환 (GPU 가속)
         mel_spec = self.mel_transform(waveform)
         mel_spec_db = self.amplitude_to_db(mel_spec)
 
@@ -75,15 +96,16 @@ class FallDetector:
 
     def predict_file(self, audio_path: str) -> dict:
         """파일에서 낙상 감지"""
-        waveform, sr = torchaudio.load(audio_path)
+        # librosa로 오디오 로드 (호환성 좋음)
+        waveform, sr = librosa.load(audio_path, sr=self.sample_rate, mono=True)
         return self.predict(waveform, sr)
 
-    def predict(self, waveform: torch.Tensor, sr: int) -> dict:
+    def predict(self, waveform: np.ndarray, sr: int) -> dict:
         """
         오디오 데이터로 낙상 여부 판별
 
         Args:
-            waveform: 오디오 웨이브폼 텐서
+            waveform: 오디오 웨이브폼 (numpy array)
             sr: 샘플레이트
 
         Returns:
@@ -91,7 +113,6 @@ class FallDetector:
         """
         # 전처리
         mel_spec = self.preprocess(waveform, sr)
-        mel_spec = mel_spec.to(self.device)
 
         # 추론
         with torch.no_grad():
@@ -101,12 +122,12 @@ class FallDetector:
         # 결과
         is_fall = confidence > self.threshold
 
-        # 소리 유형 분류 (단순화)
+        # 소리 유형 분류
         if is_fall:
             if confidence > 0.8:
-                sound_type = "thud"  # 쿵 소리
+                sound_type = "thud"
             else:
-                sound_type = "impact"  # 충격음
+                sound_type = "impact"
         else:
             sound_type = "normal"
 
@@ -127,11 +148,7 @@ class FallDetector:
         Returns:
             dict: {fall: bool, confidence: float, soundType: str}
         """
-        waveform = torch.from_numpy(audio_chunk).float()
-        if waveform.dim() == 1:
-            waveform = waveform.unsqueeze(0)
-
-        return self.predict(waveform, sr)
+        return self.predict(audio_chunk, sr)
 
 
 def predict(audio_data) -> dict:

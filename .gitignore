@@ -37,7 +37,6 @@ env/
 
 # Data & Models (large files)
 data/
-models/*.pt
 models/*.pth
 models/*.h5
 models/*.onnx
