@@ -46,9 +46,20 @@ async def audio_stream(websocket: WebSocket):
 
             # int16 PCM → float32 numpy array
             audio_chunk = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            # [실험 코드] 현재 들어오는 소리의 크기를 측정
+            rms = np.sqrt(np.mean(audio_chunk**2))
+            peak = np.max(np.abs(audio_chunk))
+            std = np.std(audio_chunk)
+            logger.info(f"[Audio Check] RMS: {rms:.6f} | Peak: {peak:.6f} | STD: {std:.6f}")
+            
+            # 소리 크기가 충분히 작으면 무시(잡음 방지)
+            if rms < 0.1:
+                continue
 
             # AI 추론
             result = detector.predict_stream(audio_chunk, settings.SAMPLE_RATE)
+            logger.info(f"[AI Result] Confidence: {result['confidence']:.4f}")
 
             # 낙상 감지 시 Spring 서버에 알림
             if result["fall"]:
